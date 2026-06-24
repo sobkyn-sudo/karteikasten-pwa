@@ -1,6 +1,6 @@
 import { storage } from "./storage.js";
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Home, Plus, Trash2, Check, X, Clock, Layers, Repeat, RotateCcw, BookOpen, Download, Upload, Search, AlertCircle, Target, Lightbulb, Users } from 'lucide-react';
+import { Home, Plus, Trash2, Check, X, Clock, Layers, Repeat, RotateCcw, BookOpen, Download, Upload, Search, AlertCircle, Target, Lightbulb, Users, Volume2 } from 'lucide-react';
 
 const COLORS = {
   paper: '#F6F1E7',
@@ -502,6 +502,14 @@ function shuffle(arr) {
 }
 
 const ARTICLES = ['der', 'die', 'das'];
+
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'de-DE';
+  window.speechSynthesis.speak(u);
+}
 
 // Splits "das Haus" into { article: 'das', rest: 'Haus' }. Returns null if no recognizable article.
 function splitArticle(de) {
@@ -1953,6 +1961,21 @@ export default function App() {
                     </div>
                   )}
                   <div className="text-sm mt-4" style={{ color: COLORS.inkLight }}>Tap to reveal</div>
+                  {(current.direction === 'de-en' || sessionMode.type === 'articles') && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const text = sessionMode.type === 'articles'
+                          ? (splitArticle(currentWord.de)?.rest || currentWord.de)
+                          : currentWord.de;
+                        speak(text);
+                      }}
+                      aria-label="Pronounce German"
+                      style={{ position: 'absolute', top: 12, left: 12, padding: 5, borderRadius: 6, border: `1px solid ${COLORS.rule}`, background: COLORS.paper, color: COLORS.inkLight, cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                    >
+                      <Volume2 size={15} />
+                    </button>
+                  )}
                   <div
                     className="font-mono text-xs px-2 py-0.5 rounded"
                     style={{ position: 'absolute', bottom: 12, right: 12, background: COLORS.paper, color: COLORS.inkLight, border: `1px solid ${COLORS.rule}` }}
@@ -1977,17 +2000,33 @@ export default function App() {
                       <div style={{ position: 'absolute', top: 0, left: 24, right: 24, height: 1, background: COLORS.green, opacity: 0.4 }} />
                       {sessionMode.type === 'articles' ? (
                         <>
-                          <div className="font-serif text-3xl text-center">{currentWord.de}</div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                            <div className="font-serif text-3xl text-center">{currentWord.de}</div>
+                            <button onClick={(e) => { e.stopPropagation(); speak(currentWord.de); }} aria-label="Pronounce German" style={{ padding: 4, borderRadius: 6, border: `1px solid ${COLORS.rule}`, background: COLORS.paper, color: COLORS.inkLight, cursor: 'pointer', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                              <Volume2 size={15} />
+                            </button>
+                          </div>
                           <div className="text-sm mt-2 text-center" style={{ color: COLORS.inkLight }}>{currentWord.en}</div>
+                        </>
+                      ) : current.direction === 'de-en' ? (
+                        <>
+                          <div className="font-serif text-3xl text-center">{currentWord.en}</div>
+                          <div className="text-sm mt-2 text-center" style={{ color: COLORS.inkLight, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>
+                            <span>({currentWord.de})</span>
+                            <button onClick={(e) => { e.stopPropagation(); speak(currentWord.de); }} aria-label="Pronounce German" style={{ padding: 3, borderRadius: 5, border: `1px solid ${COLORS.rule}`, background: COLORS.paper, color: COLORS.inkLight, cursor: 'pointer', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                              <Volume2 size={12} />
+                            </button>
+                          </div>
                         </>
                       ) : (
                         <>
-                          <div className="font-serif text-3xl text-center">
-                            {current.direction === 'de-en' ? currentWord.en : <GermanWord de={currentWord.de} />}
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                            <div className="font-serif text-3xl text-center"><GermanWord de={currentWord.de} /></div>
+                            <button onClick={(e) => { e.stopPropagation(); speak(currentWord.de); }} aria-label="Pronounce German" style={{ padding: 4, borderRadius: 6, border: `1px solid ${COLORS.rule}`, background: COLORS.paper, color: COLORS.inkLight, cursor: 'pointer', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                              <Volume2 size={15} />
+                            </button>
                           </div>
-                          <div className="text-sm mt-2 text-center" style={{ color: COLORS.inkLight }}>
-                            {current.direction === 'de-en' ? `(${currentWord.de})` : `(${currentWord.en})`}
-                          </div>
+                          <div className="text-sm mt-2 text-center" style={{ color: COLORS.inkLight }}>({currentWord.en})</div>
                         </>
                       )}
                     </>
