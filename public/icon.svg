@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Warm beige background -->
+  <rect width="512" height="512" rx="96" fill="#F6F1E7"/>
+
+  <!-- Card stack shadow (bottom card) -->
+  <rect x="110" y="195" width="292" height="200" rx="18" fill="#E2D7C3" transform="rotate(-6, 256, 295)"/>
+
+  <!-- Card stack (middle card) -->
+  <rect x="110" y="185" width="292" height="200" rx="18" fill="#EDE8DC" transform="rotate(-2, 256, 285)"/>
+
+  <!-- Top card (white) -->
+  <rect x="110" y="168" width="292" height="200" rx="18" fill="#FFFDF7" stroke="#E2D7C3" stroke-width="3"/>
+
+  <!-- Ruled lines on top card -->
+  <line x1="148" y1="220" x2="364" y2="220" stroke="#E2D7C3" stroke-width="2" stroke-linecap="round"/>
+  <line x1="148" y1="248" x2="364" y2="248" stroke="#E2D7C3" stroke-width="2" stroke-linecap="round"/>
+  <line x1="148" y1="276" x2="300" y2="276" stroke="#E2D7C3" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Gold accent dot (Leitner box indicator) -->
+  <circle cx="148" cy="220" r="0" fill="none"/>
+  <rect x="130" y="205" width="8" height="8" rx="2" fill="#C79A33"/>
+  <rect x="130" y="233" width="8" height="8" rx="2" fill="#C79A33"/>
+  <rect x="130" y="261" width="8" height="8" rx="2" fill="#E2D7C3"/>
+
+  <!-- Small "K" lettermark at bottom of card -->
+  <text x="256" y="342" font-family="Georgia, serif" font-size="28" font-weight="bold" fill="#9A8F7E" text-anchor="middle">Karteikasten</text>
+</svg>
