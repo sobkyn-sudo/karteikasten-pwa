@@ -1946,14 +1946,9 @@ export default function App() {
                           <div className="text-sm mt-2 text-center" style={{ color: COLORS.inkLight }}>{currentWord.en}</div>
                         </>
                       ) : (
-                        <>
-                          <div className="text-xs font-mono uppercase tracking-widest mb-2" style={{ color: COLORS.inkLight }}>
-                            {current.direction === 'de-en' ? currentWord.de : currentWord.en}
-                          </div>
-                          <div className="font-serif text-3xl text-center">
-                            {current.direction === 'de-en' ? currentWord.en : currentWord.de}
-                          </div>
-                        </>
+                        <div className="font-serif text-3xl text-center">
+                          {current.direction === 'de-en' ? currentWord.en : currentWord.de}
+                        </div>
                       )}
                     </>
                   )}
