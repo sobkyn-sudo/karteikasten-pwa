@@ -1126,7 +1126,13 @@ export default function App() {
     setSessionMode(mode);
     setSessionStats({ seen: 0, correct: 0, incorrect: 0, missed: [], missedArticles: [] });
     setShowHint(false);
-    const pool = mode.filter === 'b1' ? words.filter((w) => w.level === 'B1') : words;
+    const pool = mode.filter === 'b1'
+      ? words.filter((w) => w.level === 'B1')
+      : mode.filter === 'focus'
+      ? words.filter((w) => w.box === 1 && w.seen > 0 && !w.lastFailWasArticleOnly)
+      : mode.filter === 'focusArticles'
+      ? words.filter((w) => w.articleBox === 1 && (w.articleSeen > 0 || w.lastFailWasArticleOnly) && !(w.box === 1 && w.seen > 0 && !w.lastFailWasArticleOnly))
+      : words;
     if (pool.length === 0) return;
     let q = [];
     let firstId;
@@ -1270,7 +1276,7 @@ export default function App() {
   const maxBox = Math.max(1, ...boxCounts);
   const focusWords = words.filter((w) => w.box === 1 && w.seen > 0 && !w.lastFailWasArticleOnly).sort((a, b) => b.incorrect - a.incorrect);
   const eligibleNouns = words.filter((w) => w.type === 'noun' && splitArticle(w.de));
-  const focusArticles = eligibleNouns.filter((w) => w.articleBox === 1 && (w.articleSeen > 0 || w.lastFailWasArticleOnly)).sort((a, b) => b.articleIncorrect - a.articleIncorrect);
+  const focusArticles = eligibleNouns.filter((w) => w.articleBox === 1 && (w.articleSeen > 0 || w.lastFailWasArticleOnly) && !(w.box === 1 && w.seen > 0 && !w.lastFailWasArticleOnly)).sort((a, b) => b.articleIncorrect - a.articleIncorrect);
   const b1Words = words.filter((w) => w.level === 'B1');
   const lastSession = history[0];
 
@@ -1630,6 +1636,13 @@ export default function App() {
                         </div>
                       ))}
                     </div>
+                    <button
+                      onClick={() => startSession({ type: 'all', filter: 'focus' })}
+                      className="w-full mt-3 py-2.5 rounded-md text-sm font-medium flex items-center justify-center gap-2"
+                      style={{ background: `${COLORS.red}22`, color: COLORS.red, border: `1px solid ${COLORS.rule}` }}
+                    >
+                      <Repeat size={15} /> Practice these words
+                    </button>
                   </div>
                 )}
 
@@ -1654,7 +1667,7 @@ export default function App() {
                       ))}
                     </div>
                     <button
-                      onClick={() => startSession({ type: 'articles' })}
+                      onClick={() => startSession({ type: 'articles', filter: 'focusArticles' })}
                       className="w-full mt-3 py-2.5 rounded-md text-sm font-medium flex items-center justify-center gap-2"
                       style={{ background: `${COLORS.gold}22`, color: COLORS.gold, border: `1px solid ${COLORS.rule}` }}
                     >
@@ -1968,9 +1981,14 @@ export default function App() {
                           <div className="text-sm mt-2 text-center" style={{ color: COLORS.inkLight }}>{currentWord.en}</div>
                         </>
                       ) : (
-                        <div className="font-serif text-3xl text-center">
-                          {current.direction === 'de-en' ? currentWord.en : <GermanWord de={currentWord.de} />}
-                        </div>
+                        <>
+                          <div className="font-serif text-3xl text-center">
+                            {current.direction === 'de-en' ? currentWord.en : <GermanWord de={currentWord.de} />}
+                          </div>
+                          <div className="text-sm mt-2 text-center" style={{ color: COLORS.inkLight }}>
+                            {current.direction === 'de-en' ? `(${currentWord.de})` : `(${currentWord.en})`}
+                          </div>
+                        </>
                       )}
                     </>
                   )}
