@@ -517,6 +517,28 @@ function pickDirection(directionMode) {
   return Math.random() < 0.5 ? 'de-en' : 'en-de';
 }
 
+const GERMAN_PREPS = new Set([
+  'an','auf','aus','bei','bis','durch','für','gegen','in','mit',
+  'nach','ob','ohne','seit','um','unter','von','vor','während',
+  'zu','über','als','gegenüber',
+]);
+
+function GermanWord({ de }) {
+  const parts = de.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    const last = parts[parts.length - 1].toLowerCase();
+    if (GERMAN_PREPS.has(last)) {
+      return (
+        <>
+          {parts.slice(0, -1).join(' ')}{' '}
+          <span style={{ color: COLORS.gold, fontStyle: 'italic' }}>{parts[parts.length - 1]}</span>
+        </>
+      );
+    }
+  }
+  return de;
+}
+
 function weightedPick(words, excludeId, boxKey = 'box') {
   const pool = words.filter((w) => w.id !== excludeId);
   const candidates = pool.length ? pool : words;
@@ -1914,7 +1936,7 @@ export default function App() {
                     </>
                   ) : (
                     <div className="font-serif text-3xl text-center" style={{ letterSpacing: '0.01em' }}>
-                      {current.direction === 'de-en' ? currentWord.de : currentWord.en}
+                      {current.direction === 'de-en' ? <GermanWord de={currentWord.de} /> : currentWord.en}
                     </div>
                   )}
                   <div className="text-sm mt-4" style={{ color: COLORS.inkLight }}>Tap to reveal</div>
@@ -1947,7 +1969,7 @@ export default function App() {
                         </>
                       ) : (
                         <div className="font-serif text-3xl text-center">
-                          {current.direction === 'de-en' ? currentWord.en : currentWord.de}
+                          {current.direction === 'de-en' ? currentWord.en : <GermanWord de={currentWord.de} />}
                         </div>
                       )}
                     </>
