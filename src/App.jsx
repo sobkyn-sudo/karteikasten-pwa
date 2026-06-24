@@ -47,7 +47,7 @@ const progressKey = (uid) => `karteikasten-progress-${uid}`;
 const historyKey = (uid) => `karteikasten-history-${uid}`;
 
 // Progress fields that are per-user (kept in separate progress store)
-const PROGRESS_FIELDS = ['box','seen','correct','incorrect','articleBox','articleSeen','articleCorrect','articleIncorrect','lastFailWasArticleOnly','lastSeen'];
+const PROGRESS_FIELDS = ['box','seen','correct','incorrect','articleBox','articleSeen','articleCorrect','articleIncorrect','lastFailWasArticleOnly','lastSeen','focusStreak'];
 
 function extractProgress(word) {
   const p = {};
@@ -62,7 +62,7 @@ function applyProgress(word, progress) {
 
 // Default progress for a word a user hasn't touched yet
 function defaultProgress() {
-  return { box: 1, seen: 0, correct: 0, incorrect: 0, articleBox: 1, articleSeen: 0, articleCorrect: 0, articleIncorrect: 0, lastFailWasArticleOnly: false };
+  return { box: 1, seen: 0, correct: 0, incorrect: 0, articleBox: 1, articleSeen: 0, articleCorrect: 0, articleIncorrect: 0, lastFailWasArticleOnly: false, focusStreak: 0 };
 }
 
 const BATCH3_WORDS = [
@@ -595,6 +595,7 @@ function ensureWordFields(w) {
     articleCorrect: w.articleCorrect || 0,
     articleIncorrect: w.articleIncorrect || 0,
     lastFailWasArticleOnly: w.lastFailWasArticleOnly || false,
+    focusStreak: w.focusStreak || 0,
     example,
     level: w.level || null,
   };
@@ -1218,8 +1219,21 @@ export default function App() {
       updatedWord.seen = currentWord.seen + 1;
       if (passed) {
         updatedWord.correct = currentWord.correct + 1;
-        updatedWord.box = Math.min(5, currentWord.box + 1);
         updatedWord.lastFailWasArticleOnly = false;
+        if (currentWord.box === 1) {
+          // Box-1 (focus) cards need 3 consecutive correct answers across sessions to advance
+          const newStreak = (currentWord.focusStreak || 0) + 1;
+          if (newStreak >= 3) {
+            updatedWord.box = 2;
+            updatedWord.focusStreak = 0;
+          } else {
+            updatedWord.box = 1;
+            updatedWord.focusStreak = newStreak;
+          }
+        } else {
+          updatedWord.box = Math.min(5, currentWord.box + 1);
+          updatedWord.focusStreak = 0;
+        }
         // Also credit the article if it's a noun
         if (hasArticle) {
           updatedWord.articleSeen = currentWord.articleSeen + 1;
@@ -1230,6 +1244,7 @@ export default function App() {
         // Knew the word, wrong article — only penalise the article box
         updatedWord.incorrect = currentWord.incorrect + 1;
         updatedWord.box = 1;
+        updatedWord.focusStreak = 0;
         updatedWord.lastFailWasArticleOnly = true;
         updatedWord.articleSeen = currentWord.articleSeen + 1;
         updatedWord.articleIncorrect = currentWord.articleIncorrect + 1;
@@ -1238,6 +1253,7 @@ export default function App() {
         // Didn't know the word at all
         updatedWord.incorrect = currentWord.incorrect + 1;
         updatedWord.box = 1;
+        updatedWord.focusStreak = 0;
         updatedWord.lastFailWasArticleOnly = false;
         if (hasArticle) {
           updatedWord.articleSeen = currentWord.articleSeen + 1;
@@ -1636,11 +1652,11 @@ export default function App() {
                             <span className="font-medium">{w.de}</span>
                             <span style={{ color: COLORS.inkLight }}> — {w.en}</span>
                           </div>
-                          {w.incorrect > 0 && (
-                            <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ background: COLORS.redSoft, color: COLORS.red }}>
-                              ✗{w.incorrect}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1.5">
+                            {[0,1,2].map((i) => (
+                              <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: i < (w.focusStreak || 0) ? COLORS.green : COLORS.rule }} />
+                            ))}
+                          </div>
                         </div>
                       ))}
                     </div>
