@@ -671,6 +671,7 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState('home');
+  const [expandedFocusId, setExpandedFocusId] = useState(null);
 
   // ---- Profiles ----
   const [profiles, setProfiles] = useState([]); // [{id, name}]
@@ -1141,6 +1142,8 @@ export default function App() {
       ? words.filter((w) => w.box === 1 && w.seen > 0 && !w.lastFailWasArticleOnly)
       : mode.filter === 'focusArticles'
       ? words.filter((w) => w.articleBox === 1 && (w.articleSeen > 0 || w.lastFailWasArticleOnly) && !(w.box === 1 && w.seen > 0 && !w.lastFailWasArticleOnly))
+      : typeof mode.boxFilter === 'number'
+      ? words.filter((w) => w.box === mode.boxFilter)
       : words;
     if (pool.length === 0) return;
     let q = [];
@@ -1221,14 +1224,20 @@ export default function App() {
         updatedWord.correct = currentWord.correct + 1;
         updatedWord.lastFailWasArticleOnly = false;
         if (currentWord.box === 1) {
-          // Box-1 (focus) cards need 3 consecutive correct answers across sessions to advance
-          const newStreak = (currentWord.focusStreak || 0) + 1;
-          if (newStreak >= 3) {
+          if (currentWord.seen === 0) {
+            // First exposure ever — advance immediately
             updatedWord.box = 2;
             updatedWord.focusStreak = 0;
           } else {
-            updatedWord.box = 1;
-            updatedWord.focusStreak = newStreak;
+            // Previously failed back to box 1 — require 3 consecutive correct answers
+            const newStreak = (currentWord.focusStreak || 0) + 1;
+            if (newStreak >= 3) {
+              updatedWord.box = 2;
+              updatedWord.focusStreak = 0;
+            } else {
+              updatedWord.box = 1;
+              updatedWord.focusStreak = newStreak;
+            }
           }
         } else {
           updatedWord.box = Math.min(5, currentWord.box + 1);
@@ -1453,16 +1462,23 @@ export default function App() {
                   <div className="flex items-end gap-2" style={{ height: 90 }}>
                     {boxCounts.map((c, i) => {
                       const tints = [COLORS.red, '#C1815F', COLORS.gold, '#8FAE7D', COLORS.green];
+                      const clickable = c > 0;
                       return (
-                        <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1" style={{ height: '100%' }}>
+                        <div
+                          key={i}
+                          className="flex-1 flex flex-col items-center justify-end gap-1"
+                          style={{ height: '100%', cursor: clickable ? 'pointer' : 'default' }}
+                          title={clickable ? `Practice box ${i + 1} (${c} word${c !== 1 ? 's' : ''})` : undefined}
+                          onClick={clickable ? () => startSession({ type: 'all', boxFilter: i + 1 }) : undefined}
+                        >
                           <div className="font-mono text-sm">{c}</div>
                           <div
-                            className="w-full rounded-sm"
+                            className={`w-full rounded-sm${clickable ? ' hover:opacity-100' : ''}`}
                             style={{
                               height: Math.max(6, (c / maxBox) * 56),
                               background: tints[i],
                               opacity: c === 0 ? 0.18 : 0.85,
-                              transition: 'height 0.3s ease',
+                              transition: 'height 0.3s ease, opacity 0.15s ease',
                             }}
                           />
                           <div className="text-xs font-mono" style={{ color: COLORS.inkLight }}>{i + 1}</div>
@@ -1646,19 +1662,36 @@ export default function App() {
                       Words to focus on ({focusWords.length})
                     </div>
                     <div className="flex flex-col gap-2">
-                      {focusWords.map((w) => (
-                        <div key={w.id} className="flex items-center justify-between rounded-md px-3 py-2" style={{ background: COLORS.card, border: `1px solid ${COLORS.rule}` }}>
-                          <div className="text-sm">
-                            <span className="font-medium">{w.de}</span>
-                            <span style={{ color: COLORS.inkLight }}> — {w.en}</span>
+                      {focusWords.map((w) => {
+                        const expanded = expandedFocusId === w.id;
+                        const hasExample = w.example?.de;
+                        return (
+                          <div
+                            key={w.id}
+                            className="rounded-md px-3 py-2"
+                            style={{ background: COLORS.card, border: `1px solid ${COLORS.rule}`, cursor: hasExample ? 'pointer' : 'default' }}
+                            onClick={hasExample ? () => setExpandedFocusId(expanded ? null : w.id) : undefined}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="text-sm">
+                                <span className="font-medium">{w.de}</span>
+                                <span style={{ color: COLORS.inkLight }}> — {w.en}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                {[0,1,2].map((i) => (
+                                  <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: i < (w.focusStreak || 0) ? COLORS.green : COLORS.rule }} />
+                                ))}
+                              </div>
+                            </div>
+                            {expanded && hasExample && (
+                              <div className="mt-2 pt-2" style={{ borderTop: `1px solid ${COLORS.rule}` }}>
+                                <div className="text-sm font-medium">{w.example.de}</div>
+                                <div className="text-sm mt-0.5" style={{ color: COLORS.inkLight }}>{w.example.en}</div>
+                              </div>
+                            )}
                           </div>
-                          <div className="flex items-center gap-1.5">
-                            {[0,1,2].map((i) => (
-                              <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: i < (w.focusStreak || 0) ? COLORS.green : COLORS.rule }} />
-                            ))}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     <button
                       onClick={() => startSession({ type: 'all', filter: 'focus' })}
@@ -1676,19 +1709,36 @@ export default function App() {
                       Articles to focus on ({focusArticles.length})
                     </div>
                     <div className="flex flex-col gap-2">
-                      {focusArticles.map((w) => (
-                        <div key={w.id} className="flex items-center justify-between rounded-md px-3 py-2" style={{ background: COLORS.card, border: `1px solid ${COLORS.rule}` }}>
-                          <div className="text-sm">
-                            <span className="font-medium">{w.de}</span>
-                            <span style={{ color: COLORS.inkLight }}> — {w.en}</span>
+                      {focusArticles.map((w) => {
+                        const expanded = expandedFocusId === `art-${w.id}`;
+                        const hasExample = w.example?.de;
+                        return (
+                          <div
+                            key={w.id}
+                            className="rounded-md px-3 py-2"
+                            style={{ background: COLORS.card, border: `1px solid ${COLORS.rule}`, cursor: hasExample ? 'pointer' : 'default' }}
+                            onClick={hasExample ? () => setExpandedFocusId(expanded ? null : `art-${w.id}`) : undefined}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="text-sm">
+                                <span className="font-medium">{w.de}</span>
+                                <span style={{ color: COLORS.inkLight }}> — {w.en}</span>
+                              </div>
+                              {w.articleIncorrect > 0 && (
+                                <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ background: `${COLORS.gold}22`, color: COLORS.gold }}>
+                                  ✗{w.articleIncorrect}
+                                </span>
+                              )}
+                            </div>
+                            {expanded && hasExample && (
+                              <div className="mt-2 pt-2" style={{ borderTop: `1px solid ${COLORS.rule}` }}>
+                                <div className="text-sm font-medium">{w.example.de}</div>
+                                <div className="text-sm mt-0.5" style={{ color: COLORS.inkLight }}>{w.example.en}</div>
+                              </div>
+                            )}
                           </div>
-                          {w.articleIncorrect > 0 && (
-                            <span className="font-mono text-xs px-2 py-0.5 rounded" style={{ background: `${COLORS.gold}22`, color: COLORS.gold }}>
-                              ✗{w.articleIncorrect}
-                            </span>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     <button
                       onClick={() => startSession({ type: 'articles', filter: 'focusArticles' })}
