@@ -1,6 +1,11 @@
 import { storage } from "./storage.js";
+import {
+  progressKey, historyKey, normalizeUsername, setActiveProfileForSync, syncNow, establishSync, getLastSyncedAt,
+  resolveUsername, claimUsername,
+  checkDirectoryPassphrase, fetchDirectory, deleteProfileCloud, forgetLocalProfileData,
+} from "./sync.js";
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Home, Plus, Trash2, Check, X, Clock, Layers, Repeat, RotateCcw, BookOpen, Download, Upload, Search, AlertCircle, Target, Lightbulb, Users, Volume2 } from 'lucide-react';
+import { Home, Plus, Trash2, Check, X, Clock, Layers, Repeat, RotateCcw, BookOpen, Download, Upload, Search, AlertCircle, Target, Lightbulb, Users, Volume2, RefreshCw } from 'lucide-react';
 
 const COLORS = {
   paper: '#F6F1E7',
@@ -43,8 +48,6 @@ const STORAGE_B1_IMPORT_DONE = 'karteikasten-b1-import-1';
 const STORAGE_BATCH3_DONE = 'karteikasten-batch3-import-1';
 const STORAGE_PROFILES = 'karteikasten-profiles';
 const STORAGE_ACTIVE_PROFILE = 'karteikasten-active-profile';
-const progressKey = (uid) => `karteikasten-progress-${uid}`;
-const historyKey = (uid) => `karteikasten-history-${uid}`;
 
 // Progress fields that are per-user (kept in separate progress store)
 const PROGRESS_FIELDS = ['box','seen','correct','incorrect','articleBox','articleSeen','articleCorrect','articleIncorrect','lastFailWasArticleOnly','lastSeen','focusStreak'];
@@ -691,6 +694,17 @@ export default function App() {
   const [addMessage, setAddMessage] = useState('');
   const fileInputRef = useRef(null);
 
+  // ---- Sync ----
+  const [syncMessage, setSyncMessage] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const [showProfilesGate, setShowProfilesGate] = useState(false); // password-gated directory screen
+  const [profilesPassphrase, setProfilesPassphrase] = useState('');
+  const [profilesGateError, setProfilesGateError] = useState('');
+  const [directoryNames, setDirectoryNames] = useState(null); // null = locked, [] = unlocked/empty
+  const [pendingAdoptName, setPendingAdoptName] = useState(null); // name tapped in directory, awaiting confirm
+  const [pendingDeleteName, setPendingDeleteName] = useState(null); // name to delete, awaiting confirm
+
   const [sessionMode, setSessionMode] = useState(null); // {type:'timed'|'all'|'articles', minutes}
   const [directionMode, setDirectionMode] = useState('mixed'); // 'mixed' | 'de-en' | 'en-de'
   const [sessionTotal, setSessionTotal] = useState(0);
@@ -707,6 +721,52 @@ export default function App() {
   // ---- Load / Save ----
   useEffect(() => {
     (async () => {
+      // If this device already knows who's using it, set up that profile's
+      // sync scope and catch up (shared word list + this profile's progress)
+      // before building any state, so a stale tab picks up remote changes.
+      let peekedActiveProfile = null;
+      try {
+        const ap = await storage.get(STORAGE_ACTIVE_PROFILE);
+        if (ap && ap.value) peekedActiveProfile = JSON.parse(ap.value);
+      } catch (e) { /* first launch on this device */ }
+
+      if (peekedActiveProfile) {
+        // Reconcile identity: the cloud is the source of truth for which id
+        // owns a name. An old device made up its own local id, so we may need
+        // to adopt the canonical cloud id (and carry our real local data over
+        // to it if the cloud copy is empty), so every device converges on the
+        // same storage keys.
+        const resolved = await resolveUsername(peekedActiveProfile.name).catch(() => null);
+        if (resolved && resolved.id !== peekedActiveProfile.id) {
+          const oldPK = progressKey(peekedActiveProfile.id);
+          const oldHK = historyKey(peekedActiveProfile.id);
+          const newPK = progressKey(resolved.id);
+          const newHK = historyKey(resolved.id);
+          // If the cloud had no data yet under the canonical id, carry our real
+          // local data across so it isn't stranded on the old id.
+          try {
+            const canonProg = await storage.get(newPK).then((r) => r.value).catch(() => null);
+            const oldProg = await storage.get(oldPK).then((r) => r.value).catch(() => null);
+            if ((!canonProg || canonProg === '{}') && oldProg) await storage.set(newPK, oldProg);
+            const canonHist = await storage.get(newHK).then((r) => r.value).catch(() => null);
+            const oldHist = await storage.get(oldHK).then((r) => r.value).catch(() => null);
+            if ((!canonHist || canonHist === '[]') && oldHist) await storage.set(newHK, oldHist);
+          } catch (e) {}
+          peekedActiveProfile = { id: resolved.id, name: resolved.name };
+          await storage.set(STORAGE_ACTIVE_PROFILE, JSON.stringify(peekedActiveProfile)).catch(() => {});
+        } else if (!resolved) {
+          // Cloud doesn't know this name yet — claim it under our id (migration).
+          claimUsername(peekedActiveProfile.name, peekedActiveProfile.id).catch(() => {});
+        }
+        setActiveProfileForSync(peekedActiveProfile.id, peekedActiveProfile.name);
+      }
+
+      const changed = await establishSync();
+      if (changed) {
+        window.location.reload();
+        return;
+      }
+
       let loadedWords = [];
       let hasStoredWords = false;
       try {
@@ -867,11 +927,27 @@ export default function App() {
         if (pr && pr.value) loadedProfiles = JSON.parse(pr.value);
       } catch (e) {}
 
-      let loadedActiveProfile = null;
-      try {
-        const ap = await storage.get(STORAGE_ACTIVE_PROFILE);
-        if (ap && ap.value) loadedActiveProfile = JSON.parse(ap.value);
-      } catch (e) {}
+      let loadedActiveProfile = peekedActiveProfile;
+
+      // If identity reconciliation above changed the active profile's id, make
+      // the stored profiles list agree (match by name) so the picker and
+      // switching keep working.
+      if (loadedActiveProfile) {
+        const nName = normalizeUsername(loadedActiveProfile.name);
+        let profilesChanged = false;
+        loadedProfiles = loadedProfiles.map((p) => {
+          if (normalizeUsername(p.name) === nName && p.id !== loadedActiveProfile.id) {
+            profilesChanged = true;
+            return { ...p, id: loadedActiveProfile.id };
+          }
+          return p;
+        });
+        if (!loadedProfiles.some((p) => normalizeUsername(p.name) === nName)) {
+          loadedProfiles = [...loadedProfiles, loadedActiveProfile];
+          profilesChanged = true;
+        }
+        if (profilesChanged) await storage.set(STORAGE_PROFILES, JSON.stringify(loadedProfiles)).catch(() => {});
+      }
 
       // Migrate: if words already have progress baked in and no profiles yet,
       // create a default "Player 1" profile and migrate their progress.
@@ -960,16 +1036,53 @@ export default function App() {
   const createProfile = async (name) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const newProfile = { id: uid(), name: trimmed };
+
+    // Does this name already exist somewhere in the cloud? If so, adopt that
+    // profile's id (and its already-pulled progress/history) instead of
+    // starting fresh — this is what makes "type your name" carry you across
+    // devices.
+    setAddMessage('');
+    let newProfile;
+    let isFreshProfile = false;
+
+    const existing = await resolveUsername(trimmed).catch(() => null);
+    if (existing) {
+      newProfile = { id: existing.id, name: existing.name };
+    } else {
+      // Nobody owns this name yet. Claim it atomically — if another device
+      // claims the same brand-new name in the same instant, we lose the
+      // race and must join *their* profile instead of silently creating an
+      // orphaned second one under the same name (that's the bug that ate
+      // real progress earlier — a blind overwrite instead of a real claim).
+      const tentativeId = uid();
+      const claim = await claimUsername(trimmed, tentativeId).catch(() => null);
+      if (!claim || claim.claimed) {
+        newProfile = { id: tentativeId, name: trimmed };
+        isFreshProfile = true;
+      } else {
+        const resolved = await resolveUsername(trimmed).catch(() => null);
+        newProfile = resolved ? { id: resolved.id, name: resolved.name } : { id: claim.ownerId, name: trimmed };
+      }
+    }
+
     const updatedProfiles = [...profiles, newProfile];
     setProfiles(updatedProfiles);
     await storage.set(STORAGE_PROFILES, JSON.stringify(updatedProfiles)).catch(() => {});
-    await switchToProfile(newProfile, true);
+    // resolveUsername (for existing) already pulled the cloud copy into local;
+    // switch reads it. skipSync so we don't double-pull before state is set.
+    await switchToProfile(newProfile, true, { skipSync: true });
+
+    // Pull-then-migrate: safe for both cases — existing pulls nothing new,
+    // fresh has no real data to push (empty is never pushed).
+    await establishSync();
+    setLastSyncedAt(getLastSyncedAt());
+    if (!isFreshProfile) setSyncMessage(`Welcome back — pulled ${newProfile.name}'s progress.`);
+
     setNewProfileName('');
     setShowProfilePicker(false);
   };
 
-  const switchToProfile = async (profile, skipConfirm = false) => {
+  const switchToProfile = async (profile, skipConfirm = false, { skipSync = false } = {}) => {
     if (!skipConfirm) {
       setShowSwitchConfirm(profile);
       return;
@@ -980,6 +1093,13 @@ export default function App() {
       for (const w of words) progress[w.id] = extractProgress(w);
       await storage.set(progressKey(activeProfile.id), JSON.stringify(progress)).catch(() => {});
     }
+
+    setActiveProfileForSync(profile.id, profile.name);
+    if (!skipSync) {
+      claimUsername(profile.name, profile.id).catch(() => {}); // no-op if already ours; never overwrites
+      await establishSync(); // pull this profile's latest, then migrate anything local the cloud lacked
+    }
+
     // Load new user's progress
     let newProgress = {};
     try {
@@ -1006,6 +1126,109 @@ export default function App() {
     setShowSwitchConfirm(null);
     setShowProfilePicker(false);
     setView('home');
+  };
+
+  // ---- Sync across devices ----
+  useEffect(() => {
+    setLastSyncedAt(getLastSyncedAt());
+  }, []);
+
+  const handleSyncNow = async () => {
+    setSyncing(true);
+    const changed = await syncNow();
+    setSyncing(false);
+    setLastSyncedAt(getLastSyncedAt());
+    if (changed) window.location.reload();
+    else setSyncMessage('Synced.');
+  };
+
+  // Catch up automatically when returning to a tab left open in the
+  // background — avoids saving over newer progress made on another device.
+  useEffect(() => {
+    const onVisible = async () => {
+      if (document.visibilityState !== 'visible') return;
+      const changed = await syncNow();
+      setLastSyncedAt(getLastSyncedAt());
+      if (changed) window.location.reload();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+
+  const submitProfilesPassphrase = async () => {
+    if (!checkDirectoryPassphrase(profilesPassphrase)) {
+      setProfilesGateError('Incorrect passphrase.');
+      return;
+    }
+    setProfilesGateError('');
+    setProfilesPassphrase('');
+    const names = await fetchDirectory();
+    setDirectoryNames(names);
+  };
+
+  const closeProfilesGate = () => {
+    setShowProfilesGate(false);
+    setProfilesPassphrase('');
+    setProfilesGateError('');
+    setDirectoryNames(null);
+  };
+
+  const adoptDirectoryProfile = (name) => {
+    const local = profiles.find((p) => normalizeUsername(p.name) === normalizeUsername(name));
+    if (local) {
+      closeProfilesGate();
+      switchToProfile(local);
+      return;
+    }
+    if (profiles.length >= 2) {
+      setSyncMessage('This device already has 2 profiles.');
+      return;
+    }
+    setPendingAdoptName(name);
+  };
+
+  const confirmAdoptDirectoryProfile = async () => {
+    const name = pendingAdoptName;
+    setPendingAdoptName(null);
+    closeProfilesGate();
+    const resolved = await resolveUsername(name);
+    if (!resolved) {
+      setSyncMessage(`Couldn't find ${name}'s data.`);
+      return;
+    }
+    const newProfile = { id: resolved.id, name: resolved.name };
+    setActiveProfileForSync(newProfile.id, newProfile.name);
+    const updatedProfiles = [...profiles, newProfile];
+    setProfiles(updatedProfiles);
+    await storage.set(STORAGE_PROFILES, JSON.stringify(updatedProfiles)).catch(() => {});
+    await switchToProfile(newProfile, true, { skipSync: true });
+    setSyncMessage(`Pulled ${resolved.name}'s progress.`);
+  };
+
+  const confirmDeleteProfile = async () => {
+    const name = pendingDeleteName;
+    setPendingDeleteName(null);
+    closeProfilesGate();
+
+    // Wipe cloud data for this name (bucket + directory entry).
+    await deleteProfileCloud(name).catch(() => {});
+
+    // Wipe any local copy on this device too, and drop it from the profile list.
+    const nName = normalizeUsername(name);
+    const local = profiles.find((p) => normalizeUsername(p.name) === nName);
+    if (local) forgetLocalProfileData(local.id);
+    const remaining = profiles.filter((p) => normalizeUsername(p.name) !== nName);
+    setProfiles(remaining);
+    await storage.set(STORAGE_PROFILES, JSON.stringify(remaining)).catch(() => {});
+
+    // If we just deleted the profile we're currently using, drop back to the picker.
+    if (local && activeProfile && local.id === activeProfile.id) {
+      setActiveProfile(null);
+      await storage.delete(STORAGE_ACTIVE_PROFILE).catch(() => {});
+      setShowProfilePicker(true);
+    }
+
+    setSyncMessage(`Deleted ${name}.`);
   };
 
   // ---- Word management ----
@@ -1313,6 +1536,14 @@ export default function App() {
   const b1Words = words.filter((w) => w.level === 'B1');
   const lastSession = history[0];
 
+  if (!loaded) {
+    return (
+      <div style={{ background: COLORS.paper, color: COLORS.inkLight, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="font-mono text-xs tracking-widest uppercase">Loading…</div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ background: COLORS.paper, color: COLORS.ink, minHeight: '100vh', fontFamily: 'ui-sans-serif, system-ui' }}>
 
@@ -1333,11 +1564,13 @@ export default function App() {
                 <button
                   key={p.id}
                   onClick={() => {
-                    if (activeProfile && p.id !== activeProfile.id) {
+                    if (!activeProfile) {
+                      switchToProfile(p, true);
+                    } else if (p.id !== activeProfile.id) {
                       setShowProfilePicker(false);
                       setShowSwitchConfirm(p);
-                    } else if (!activeProfile) {
-                      switchToProfile(p, true);
+                    } else {
+                      setShowProfilePicker(false); // tapped your own current profile — just continue
                     }
                   }}
                   className="w-full mb-2 py-3 rounded-lg font-medium flex items-center gap-3 px-4"
@@ -1406,6 +1639,126 @@ export default function App() {
               Cancel
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ---- ADOPT PROFILE CONFIRM MODAL ---- */}
+      {pendingAdoptName && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(44,40,35,0.5)', zIndex: 99, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+          <div className="w-full p-6 rounded-t-2xl" style={{ background: COLORS.card, maxWidth: 480 }}>
+            <div className="font-serif text-lg mb-1">Add {pendingAdoptName} to this device?</div>
+            <div className="text-sm mb-5" style={{ color: COLORS.inkLight }}>
+              This pulls {pendingAdoptName}'s existing progress down onto this device.
+            </div>
+            <button
+              onClick={confirmAdoptDirectoryProfile}
+              className="w-full py-3 rounded-lg font-medium mb-2"
+              style={{ background: COLORS.ink, color: COLORS.card }}
+            >
+              Add {pendingAdoptName}
+            </button>
+            <button
+              onClick={() => setPendingAdoptName(null)}
+              className="w-full py-3 rounded-lg font-medium"
+              style={{ background: COLORS.paper, border: `1px solid ${COLORS.rule}` }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ---- DELETE PROFILE CONFIRM MODAL ---- */}
+      {pendingDeleteName && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(44,40,35,0.5)', zIndex: 110, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+          <div className="w-full p-6 rounded-t-2xl" style={{ background: COLORS.card, maxWidth: 480 }}>
+            <div className="font-serif text-lg mb-1">Delete {pendingDeleteName}?</div>
+            <div className="text-sm mb-5" style={{ color: COLORS.inkLight }}>
+              This permanently erases {pendingDeleteName}'s progress and history — everywhere, on every device. The shared word list is not affected. This can't be undone.
+            </div>
+            <button
+              onClick={confirmDeleteProfile}
+              className="w-full py-3 rounded-lg font-medium mb-2"
+              style={{ background: COLORS.red, color: COLORS.card }}
+            >
+              Delete {pendingDeleteName} permanently
+            </button>
+            <button
+              onClick={() => setPendingDeleteName(null)}
+              className="w-full py-3 rounded-lg font-medium"
+              style={{ background: COLORS.paper, border: `1px solid ${COLORS.rule}` }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ---- PROFILES DIRECTORY (PASSWORD-GATED) ---- */}
+      {showProfilesGate && (
+        <div style={{ position: 'fixed', inset: 0, background: COLORS.paper, zIndex: 100, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <button onClick={closeProfilesGate} style={{ position: 'absolute', top: 20, right: 20, padding: '6px 12px', borderRadius: 8, border: `1px solid ${COLORS.rule}`, background: COLORS.card, fontSize: 13 }}>
+            Close
+          </button>
+          <div className="font-mono text-xs tracking-widest uppercase mb-1" style={{ color: COLORS.gold }}>Karteikasten</div>
+          <div className="font-serif text-2xl mb-6">Profiles</div>
+          {directoryNames === null ? (
+            <div className="w-full" style={{ maxWidth: 360 }}>
+              <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: COLORS.inkLight }}>Enter passphrase</div>
+              <input
+                type="password"
+                value={profilesPassphrase}
+                onChange={(e) => { setProfilesPassphrase(e.target.value); setProfilesGateError(''); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitProfilesPassphrase(); }}
+                className="w-full px-4 py-3 rounded-lg text-sm mb-2"
+                style={{ border: `1px solid ${COLORS.rule}`, background: COLORS.card, color: COLORS.ink }}
+                autoFocus
+              />
+              {profilesGateError && (
+                <div className="text-sm mb-2" style={{ color: COLORS.red }}>{profilesGateError}</div>
+              )}
+              <button
+                onClick={submitProfilesPassphrase}
+                disabled={!profilesPassphrase}
+                className="w-full py-3 rounded-lg font-medium"
+                style={{ background: profilesPassphrase ? COLORS.ink : COLORS.rule, color: COLORS.card }}
+              >
+                Unlock
+              </button>
+            </div>
+          ) : (
+            <div className="w-full" style={{ maxWidth: 360 }}>
+              {directoryNames.length === 0 ? (
+                <div className="text-sm text-center" style={{ color: COLORS.inkLight }}>No profiles registered yet.</div>
+              ) : (
+                directoryNames.map((name) => (
+                  <div
+                    key={name}
+                    className="w-full mb-2 rounded-lg flex items-center"
+                    style={{ background: COLORS.card, border: `1px solid ${COLORS.rule}` }}
+                  >
+                    <button
+                      onClick={() => adoptDirectoryProfile(name)}
+                      className="flex-1 py-3 font-medium flex items-center gap-3 px-4"
+                    >
+                      <div style={{ width: 36, height: 36, borderRadius: '50%', background: `${COLORS.blue}33`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, color: COLORS.blue, fontSize: 16 }}>
+                        {name[0].toUpperCase()}
+                      </div>
+                      <div className="text-left">{name}</div>
+                    </button>
+                    <button
+                      onClick={() => setPendingDeleteName(name)}
+                      aria-label={`Delete ${name}`}
+                      className="px-4 py-3"
+                      style={{ color: COLORS.red }}
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -1870,6 +2223,39 @@ export default function App() {
                   style={{ background: COLORS.greenSoft, color: COLORS.green, border: `1px solid ${COLORS.rule}` }}
                 >
                   {importMessage}
+                </div>
+              )}
+            </div>
+
+            {/* Sync status */}
+            <div className="rounded-lg p-4 mt-4" style={{ background: COLORS.card, border: `1px solid ${COLORS.rule}` }}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="font-serif text-lg">Sync</div>
+                <button
+                  onClick={handleSyncNow}
+                  disabled={syncing}
+                  className="py-1.5 px-3 rounded-md text-sm font-medium flex items-center gap-2"
+                  style={{ border: `1px solid ${COLORS.rule}`, background: COLORS.paper, color: COLORS.ink }}
+                >
+                  <RefreshCw size={14} /> {syncing ? 'Syncing…' : 'Sync now'}
+                </button>
+              </div>
+              <div className="text-xs mb-2" style={{ color: COLORS.inkLight }}>
+                {lastSyncedAt ? `Last synced ${new Date(lastSyncedAt).toLocaleTimeString()}` : 'Not synced yet'} · Your progress follows you automatically to any device where you type your name.
+              </div>
+              <button
+                onClick={() => setShowProfilesGate(true)}
+                className="text-xs underline"
+                style={{ color: COLORS.inkLight }}
+              >
+                Profiles…
+              </button>
+              {syncMessage && (
+                <div
+                  className="text-sm mt-3 px-3 py-2 rounded-md"
+                  style={{ background: COLORS.greenSoft, color: COLORS.green, border: `1px solid ${COLORS.rule}` }}
+                >
+                  {syncMessage}
                 </div>
               )}
             </div>
